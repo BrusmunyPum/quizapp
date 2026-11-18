@@ -1,0 +1,137 @@
+# ==============================================================================
+# GlassQuiz - Production Stack (Ubuntu server + GitHub / GHCR)
+# ==============================================================================
+# Runs cleanly next to other stacks (BMS on 4600, PDF Converter on 4900):
+#   - shares your existing PostgreSQL server via its own database + user (setup-database.sh)
+#   - gateway published on host port 4950 (127.0.0.1 by default), nothing else published
+#   - every container / network / volume is prefixed "glassquiz"
+#
+# Quick start:
+#   cd deploy && cp .env.example .env   # fill in secrets
+#   ./setup-database.sh                 # once: create quiz_db + user on shared PostgreSQL
+#   ./rebuild.sh                        # build locally + start (or: ./rebuild.sh pull)
+# ==============================================================================
+
+name: glassquiz
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ===================================================
+  # Nginx gateway: the only published port (/api + /socket.io -> api, /* -> web)
+  # ===================================================
+  gateway:
+    container_name: glassquiz-gateway
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT_HTTP:-4950}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging: *logging
+
+  # ===================================================
+  # Vue 3 frontend (static files served by nginx)
+  # ===================================================
+  web:
+    container_name: glassquiz-web
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${GITHUB_REPOSITORY_OWNER:-local}/glassquiz-web:${IMAGE_TAG:-latest}
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - app_network
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging: *logging
+
+  # ===================================================
+  # NestJS API + Socket.IO Gateway
+  # Runs Prisma migrations on start, inside its own quiz_db database only.
+  # ===================================================
+  api:
+    container_name: glassquiz-api
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${GITHUB_REPOSITORY_OWNER:-local}/glassquiz-api:${IMAGE_TAG:-latest}
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      REQUIRE_DB: "true"
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required in .env}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}@${POSTGRES_HOST:-host.docker.internal}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:?POSTGRES_DB is required in .env}?schema=public
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required in .env}
+      CORS_ORIGIN: ${CORS_ORIGIN:-${PUBLIC_URL:-http://localhost:4950}}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app_network
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
+    logging: *logging
+
+  # ===================================================
+  # Redis (internal only; ready for horizontal Socket.IO adapter scaling)
+  # ===================================================
+  redis:
+    container_name: glassquiz-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  redis_data:

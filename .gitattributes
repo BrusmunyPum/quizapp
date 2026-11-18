@@ -1,0 +1,4 @@
+# Enforce LF line endings on shell scripts and server configs across Windows/Linux
+*.sh text eol=lf
+deploy/nginx/** text eol=lf
+frontend/nginx.conf text eol=lf

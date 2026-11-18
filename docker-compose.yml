@@ -1,0 +1,64 @@
+# Production-testing stack that shares your existing Docker PostgreSQL container (`local-postgres`)
+# on the external Docker network `postgresql_default` (database: `quiz_db`).
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: quiz_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - quiz_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: quiz_backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-3000}
+      REQUIRE_DB: ${REQUIRE_DB:-true}
+      DATABASE_URL: ${DOCKER_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - quiz_net
+      - postgresql_default
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: quiz_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - backend
+    networks:
+      - quiz_net
+
+volumes:
+  redis_data:
+
+networks:
+  quiz_net:
+    driver: bridge
+  postgresql_default:
+    external: true

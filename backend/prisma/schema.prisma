@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  displayName  String   @map("display_name")
+  createdAt    DateTime @default(now()) @map("created_at")
+  quizzes      Quiz[]
+  rooms        Room[]
+
+  @@map("users")
+}
+
+model Quiz {
+  id            String     @id @default(uuid())
+  creatorId     String     @map("creator_id")
+  title         String
+  description   String?
+  coverImageUrl String?    @map("cover_image_url")
+  isPublic      Boolean    @default(true) @map("is_public")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+  creator       User       @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  questions     Question[]
+  rooms         Room[]
+
+  @@map("quizzes")
+}
+
+model Question {
+  id               String              @id @default(uuid())
+  quizId           String              @map("quiz_id")
+  prompt           String
+  questionType     String              @default("MULTIPLE_CHOICE") @map("question_type")
+  timeLimitSeconds Int                 @default(20) @map("time_limit_seconds")
+  points           Int                 @default(1000)
+  orderIndex       Int                 @default(0) @map("order_index")
+  mediaUrl         String?             @map("media_url")
+  quiz             Quiz                @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  options          Option[]
+  answers          ParticipantAnswer[]
+
+  @@index([quizId, orderIndex])
+  @@map("questions")
+}
+
+model Option {
+  id         String              @id @default(uuid())
+  questionId String              @map("question_id")
+  content    String
+  isCorrect  Boolean             @default(false) @map("is_correct")
+  orderIndex Int                 @default(0) @map("order_index")
+  colorCode  String?             @map("color_code")
+  question   Question            @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  answers    ParticipantAnswer[]
+
+  @@index([questionId, orderIndex])
+  @@map("options")
+}
+
+model Room {
+  id                   String        @id @default(uuid())
+  pinCode              String        @map("pin_code")
+  quizId               String        @map("quiz_id")
+  hostId               String?       @map("host_id")
+  status               String        @default("LOBBY") // LOBBY, QUESTION_ACTIVE, QUESTION_RESULT, FINISHED
+  currentQuestionIndex Int           @default(0) @map("current_question_index")
+  createdAt            DateTime      @default(now()) @map("created_at")
+  quiz                 Quiz          @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  host                 User?         @relation(fields: [hostId], references: [id], onDelete: SetNull)
+  participants         Participant[]
+
+  @@index([pinCode])
+  @@map("rooms")
+}
+
+model Participant {
+  id         String              @id @default(uuid())
+  roomId     String              @map("room_id")
+  nickname   String
+  socketId   String?             @map("socket_id")
+  totalScore Int                 @default(0) @map("total_score")
+  streak     Int                 @default(0)
+  createdAt  DateTime            @default(now()) @map("created_at")
+  room       Room                @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  answers    ParticipantAnswer[]
+
+  @@index([roomId])
+  @@map("participants")
+}
+
+model ParticipantAnswer {
+  id               String      @id @default(uuid())
+  participantId    String      @map("participant_id")
+  questionId       String      @map("question_id")
+  selectedOptionId String      @map("selected_option_id")
+  responseTimeMs   Int         @map("response_time_ms")
+  pointsAwarded    Int         @default(0) @map("points_awarded")
+  isCorrect        Boolean     @default(false) @map("is_correct")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  participant      Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  question         Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  selectedOption   Option      @relation(fields: [selectedOptionId], references: [id], onDelete: Cascade)
+
+  @@unique([participantId, questionId])
+  @@map("participant_answers")
+}
